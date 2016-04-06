@@ -22,6 +22,11 @@ before_deploy:
 - mkdir -p ~/bin
 - git clone https://github.com/github/hub.git && cd hub && script/build -o ~/bin/hub && cd ..
 - echo $TRAVIS_BRANCH
+- git config --add remote.origin.fetch +refs/heads/master:refs/remotes/origin/master
+- git fetch
+- git checkout -b master origin/master
+- git diff --word-diff origin/master..bump-version-0.9.4
+- git checkout $TRAVIS_BRANCH
 deploy:
 - provider: script
   script: script/travis/github-releases.sh
@@ -30,7 +35,7 @@ deploy:
     repo: stanaka/mkr
     branch: master
 - provider: script
-  script: script/travis/create-pullrequest.sh
+  script: script/releng --task=create-pullrequest --current-branch=$TRAVIS_BRANCH
   skip_cleanup: true
   on:
     repo: stanaka/mkr

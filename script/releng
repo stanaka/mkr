@@ -405,7 +405,7 @@ sub create_pull_request {
     } else {
         infof "skip to update changelogs because no merged pull request is found after the last release.\n"
     }
-    if($ret || !git_with_exit_code qw/diff --exit-code/){
+    if($ret || git_with_exit_code qw/diff --exit-code/){
         git qw/commit -am/, "update changelogs";
         git qw/config --global push.default matching/;
         git qw/config user.email/, 'mackerel-developers@hatena.ne.jp';

@@ -1,3 +1,10 @@
+mkr (0.9.8-1) stable; urgency=low
+
+  * fix (by stanaka)
+    <https://github.com/stanaka/mkr/pull/21>
+
+ -- travis@localhost <travis@localhost>  Thu, 07 Apr 2016 13:45:15 +0000
+
 mkr (0.9.7-1) stable; urgency=low
 
   * fix (by stanaka)

@@ -273,6 +273,7 @@ sub update_changelog {
     };
 
     my $now = localtime;
+    my $ret = 0;
 
     replace 'packaging/deb/debian/changelog' => sub {
         my $content = shift;
@@ -287,6 +288,7 @@ sub update_changelog {
         if(index($content, substr($update, 0, length($update) - 35)) == -1){
             infof "update 'packaging/deb/debian/changelog'.\n";
             $update . $content;
+            $ret = 1;
         } else {
             infof "skip to update 'packaging/deb/debian/changelog'.\n";
             $content;
@@ -303,6 +305,7 @@ sub update_changelog {
         if(index($content, $update) == -1){
             infof "update 'packaging/rpm/mkr.spec'\n";
             $content =~ s/%changelog/%changelog\n$update/;
+            $ret = 1;
         } else {
             infof "skip to update 'packaging/rpm/mkr.spec'\n";
         }
@@ -319,11 +322,13 @@ sub update_changelog {
         if(index($content, $update) == -1){
             infof "update 'CHANGELOG.md'\n";
             $content =~ s/\A# Changelog/# Changelog$update/;
+            $ret = 1;
         } else {
             infof "skip to update 'CHANGELOG.md'\n";
         }
         $content;
     };
+    $ret;
 }
 
 sub build_pull_request_body {
@@ -351,10 +356,10 @@ sub upload_to_github_release {
     }
 
     # # upload files
-    my $description = "Use at your own risk!\n\n";
+    my $description = "";
 
     my @filepaths = glob("~/rpmbuild/RPMS/*/*.rpm packaging/*.deb snapshot/mkr_*.zip");
-    say "uploading following files:\n" . join("\n", @filepaths);
+    infof "uploading following files:\n" . join("\n", @filepaths). "\n";
     for my $path (@filepaths){
         my $filename = basename($path);
         $description .= "* $filename\n";
@@ -394,8 +399,8 @@ sub create_pull_request {
     infof "bump versions, and update readme and changelogs\n";
 
     my @releases = merged_prs $current_version;
-    update_changelog($next_version, @releases) if @releases;
-    if(git_with_exit_code qw/diff --exit-code/){
+    my $ret = update_changelog($next_version, @releases) if @releases;
+    if($ret || git_with_exit_code qw/diff --exit-code/){
         git qw/commit -am/, "update changelogs";
         git qw/config --global push.default matching/;
         git qw/config user.email/, 'mackerel-developers@hatena.ne.jp';

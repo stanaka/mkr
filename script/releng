@@ -34,6 +34,7 @@ chomp(my $REPO_NAME = `git rev-parse --show-toplevel`);
 $REPO_NAME =~ s|^.+/(\w+/\w+)$|$1|;
 my $dry_run;
 my $verbose;
+my $next_version;
 
 sub DEBUG() { $ENV{MC_RELENG_DEBUG} || $verbose }
 
@@ -208,13 +209,14 @@ sub current_branch {
   return $branch;
 }
 
-sub next_release {
+sub next_version {
+    return $next_version if $next_version;
     if(current_branch() =~ /^bump-version-([\d\.]+)$/){
-        return $1;
+        return $next_version = $1;
     } elsif(current_branch() =~ /^master$/){
         my $next = `git log --merges --oneline`;
         if($next =~ /^.+Merge pull request #[0-9]+ from .+\/bump-version-([0-9\.]+)$/m){
-            return $1;
+            return $next_version = $1;
         }
     }
     return "";
@@ -345,8 +347,8 @@ sub upload_to_github_release {
     my $REPO = $1;
     my $ret = github_release_with_exit_code qw/release --user/, "stanaka",
         qw/--repo/, $REPO,
-        qw/--tag/, "v". next_release(),
-        qw/--name/, $REPO ."-" . next_release(),
+        qw/--tag/, "v". next_version(),
+        qw/--name/, $REPO ."-" . next_version(),
         qw/--description/, "pre-release",
         qw/--pre-release/;
 
@@ -365,13 +367,13 @@ sub upload_to_github_release {
         $description .= "* $filename\n";
         github_release qw/upload --user/, "stanaka",
             qw/--repo/, $REPO,
-            qw/--tag/, "v". next_release(),
+            qw/--tag/, "v". next_version(),
             qw/--name/, $filename,
             qw/--file/, $path;
     }
     github_release qw/edit --user/, "stanaka",
         qw/--repo/, $REPO,
-        qw/--tag/, "v". next_release(),
+        qw/--tag/, "v". next_version(),
         qw/--description/, $description;
 }
 
@@ -383,7 +385,7 @@ sub create_pull_request {
     git qw/checkout/, $current_branch;
 
     my $current_version = last_release;
-    my $next_version    = next_release;
+    my $next_version    = next_version;
     if(!$next_version) {
         warnf("current branch should be 'bump-version-x.y.z'.\n");
         return;
@@ -441,7 +443,9 @@ sub help {
   print <<EOS;
 $0
   --help
-  --task=<task> # create-pullrequest, github-release
+  --task=<task>            # 'create-pullrequest' or 'github-release'
+  --next-version=<version> # specify next version. if not specified, a
+                           # value derived from the branch name is used.
   --verbose
   --dry-run
 EOS
@@ -457,6 +461,7 @@ sub main {
         "verbose"  => \$verbose,
         "dry-run" => \$dry_run,
         "current-branch=s" => \$current_branch,
+        "next-version=s" => \$next_version,
         );
 
     if($help){

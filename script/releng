@@ -27,24 +27,46 @@ use ExtUtils::MakeMaker qw/prompt/;
 use Time::Piece;
 use POSIX qw(setlocale LC_TIME);
 use version;
+use Getopt::Long;
 
-my $REPO_NAME = "mackerelio/mkr";
+chomp(my $REPO_NAME = `git rev-parse --show-toplevel`);
+$REPO_NAME =~ s|^.+/(\w+/\w+)$|$1|;
+my $dry_run;
+my $verbose;
 
 sub DEBUG() { $ENV{MC_RELENG_DEBUG} }
 
 sub command {say('+ '. join ' ', @_) if DEBUG; !system(@_) or croak $!}
+sub command_with_exit_code {say('+ '. join ' ', @_) if DEBUG; system(@_)}
 sub _git {
-     state $com = do {
+    if($dry_run){
+        return
+    }
+    state $com = do {
         chomp(my $c = `which git`);
         die "git command is required\n" unless $c;
         $c;
     };
 }
 sub git {
+    if($dry_run){
+        return
+    }
     unshift  @_, _git; goto \&command
 }
 
+sub git_with_exit_code {
+    if($dry_run){
+        return
+    }
+    unshift  @_, _git; goto \&command_with_exit_code
+}
+
+
 sub _hub {
+    if($dry_run){
+        return
+    }
     state $com = do {
         chomp(my $c = `which hub`);
         unless ($c) {
@@ -55,6 +77,9 @@ sub _hub {
     };
 }
 sub hub {
+    if($dry_run){
+      return
+    }
     unshift @_, _hub; goto \&command;
 }
 
@@ -145,9 +170,31 @@ sub last_release {
     $tag;
 }
 
+sub current_branch {
+  chomp(my $branch =  `git symbolic-ref --short HEAD`);
+  return $branch;
+}
+
+sub next_release {
+    if(current_branch() =~ /^bump-version-([\d\.]+)$/){
+      return $1;
+    } else {
+      return "";
+    }
+}
+
+sub diff {
+  git_with_exit_code qw/diff --exit-code/
+}
+
 sub merged_prs {
     my $current_tag = shift;
-    my @pull_nums = sort {$a <=> $b} map {m/Merge pull request #([0-9]+) /; $1 || ()  } `git log v$current_tag... --merges --oneline`;
+    say `git log v$current_tag... --merges --oneline`;
+    say map {m/Merge pull request #([0-9]+) /; $1 || ()  } `git log v$current_tag... --merges --oneline`;
+    my @a = map {m/Merge pull request #([0-9]+) /; $1 || ()  } `git log v$current_tag... --merges --oneline`;
+    say "1.---\n".join("\n", @a)."\n1----";
+    my @pull_nums = sort {$a <=> $b} grep {/^\d+$/} map {m/Merge pull request #([0-9]+) /; $1 || ()  } `git log v$current_tag... --merges --oneline`;
+    say "---\n".join(",", @pull_nums)."\n---";
 
     my @releases;
     for my $pull_num (@pull_nums) {
@@ -191,6 +238,7 @@ sub is_valid_version {
     defined $major;
 }
 
+
 sub decide_next_version {
     my $current_version = shift;
     my $next_version = suggest_next_version($current_version);
@@ -210,13 +258,6 @@ sub update_versions {
 
     ### update versions
     my $cur_ver_reg = quotemeta $current_version;
-    # update .travis.yml
-    replace '.travis.yml' => sub {
-        my $content = shift;
-        $content =~ s/$cur_ver_reg/$next_version/msg;
-        $content;
-    };
-
     # update rpm spec
     replace 'packaging/rpm/mkr.spec' => sub {
         my $content = shift;
@@ -248,7 +289,11 @@ sub update_changelog {
             $update .= sprintf "  * %s (by %s)\n    <%s>\n", $rel->{title}, $rel->{user}, $rel->{url};
         }
         $update .= sprintf "\n -- %s <%s>  %s\n\n", $name, $email, $now->strftime("%a, %d %b %Y %H:%M:%S %z");
-        $update . $content;
+        if(index($content, $update) != -1){
+          $update . $content;
+        } else {
+          $content;
+        }
     };
 
     replace 'packaging/rpm/mkr.spec' => sub {
@@ -258,7 +303,9 @@ sub update_changelog {
         for my $rel (@releases) {
             $update .= sprintf "- %s (by %s)\n", $rel->{title}, $rel->{user};
         }
-        $content =~ s/%changelog/%changelog\n$update/;
+        if(index($content, $update) != -1){
+          $content =~ s/%changelog/%changelog\n$update/;
+        }
         $content;
     };
 
@@ -269,7 +316,9 @@ sub update_changelog {
         for my $rel (@releases) {
             $update .= sprintf "* %s #%d (%s)\n", $rel->{title}, $rel->{num}, $rel->{user};
         }
-        $content =~ s/\A# Changelog/# Changelog$update/;
+        if(index($content, $update) != -1){
+          $content =~ s/\A# Changelog/# Changelog$update/;
+        }
         $content;
     };
 }
@@ -283,8 +332,59 @@ sub build_pull_request_body {
     $body;
 }
 
+sub create_pull_request {
+  my($current_branch) = @_;
+  # check
+  #chomp(my $email = `git config user.email`);
+  #chomp(my $name  = `git config user.name`);
+  git qw/checkout/, $current_branch;
+
+  my $current_version = last_release;
+  my $next_version    = next_release;
+  if(!$next_version) {
+    warnf("current branch should be 'bump-version-x.y.z'.\n");
+    return;
+  }
+
+  # return if last commit is updating specs and changelogs
+  my $last_commitlog = `git log -1 --oneline | cut -d ' ' -f2-`;
+  if($last_commitlog =~ /update changelogs/){
+    return;
+  }
+
+  infof "bump versions and update readme\n";
+  update_versions($current_version, $next_version);
+  #if(git_with_exit_code qw/diff --exit-code/){
+  #  say "do commit";
+  #  git qw/commit -am/, "ready for next release. version: $next_version";
+  #}
+
+  infof "update changelogs\n";
+  my @releases = merged_prs $current_version;
+  say @releases;
+  update_changelog($next_version, @releases) if @releases;
+  if(git_with_exit_code qw/diff --exit-code/){
+    git qw/commit -am/, "update changelogs";
+    git qw/config --global push.default matching/;
+    git qw/config user.email/, 'mackerel-developers@hatena.ne.jp';
+    git qw/config user.name/, 'mackerel';
+    say "https://github.com/$REPO_NAME.git";
+    git qw/push --quiet/, "https://$ENV{GITHUB_TOKEN}\@github.com/$REPO_NAME.git";
+  }
+
+  #git qw/diff/, qw/--word-diff/, "master..".current_branch();
+  my $pr_body = build_pull_request_body($next_version, @releases);
+  say "Pull Request\n--------";
+  say $pr_body;
+
+  infof "push changes\n";
+  hub qw/pull-request -m/, $pr_body, qq/-b/, qq/$REPO_NAME:master/;
+
+  infof "Releasing pull request is created. Review and merge it. You can update changelogs and commit more in this branch before merging.\n";
+}
 
 ### main process
+
 if (!$ENV{HARNESS_ACTIVE}) {
     main();
 } else {
@@ -292,28 +392,65 @@ if (!$ENV{HARNESS_ACTIVE}) {
     run_tests();
 }
 
+sub help {
+  print <<EOS;
+$0
+--help
+--task=<task> # create-pullrequest, github-release
+--verbose
+--dry-run
+EOS
+
+}
+
 sub main {
+    my $help;
+    my $task;
+    my $current_branch;
+    GetOptions ("help" => \$help,
+        "task=s"   => \$task,  # create-pullrequest, github-release
+        "verbose"  => \$verbose,
+        "dry-run" => \$dry_run,
+        "current-branch=s" => \$current_branch,
+        );
+
+    if($help){
+      help();
+      exit 0;
+    }
     # check command
     _git;_hub;
 
-    git qw/checkout master/;
-    git qw/pull/;
+    #git qw/checkout master/;
+    #git qw/pull/;
+
+    if($task eq "create-pullrequest"){
+        create_pull_request($current_branch);
+        return;
+    }
+
 
     my $current_version = last_release;
-    my $next_version    = decide_next_version($current_version);
+    #my $current_version = "0.9.1";
+    #my $next_version    = decide_next_version($current_version);
+    my $next_version    = next_release;
+    if(!$next_version) {
+      warnf('current branch should be "bump-version-x.y.z".');
+      return;
+    }
 
     my $branch_name = "bump-version-$next_version";
-    infof "checkout new releasing branch [$branch_name]\n";
-    git qw/checkout -b/, $branch_name;
+    #infof "checkout new releasing branch [$branch_name]\n";
+    #git qw/checkout -b/, $branch_name;
 
     infof "bump versions and update readme\n";
     update_versions($current_version, $next_version);
-    git qw/commit -am/, "ready for next release. version: $next_version";
+    #git qw/commit -am/, "ready for next release. version: $next_version";
 
     infof "update changelogs\n";
     my @releases = merged_prs $current_version;
     update_changelog($next_version, @releases);
-    git qw/commit -am/, "update changelogs";
+    #git qw/commit -am/, "update changelogs";
 
     git qw/diff/, qw/--word-diff/, "master..$branch_name";
     my $pr_body = build_pull_request_body($next_version, @releases);
@@ -325,8 +462,8 @@ sub main {
     }
 
     infof "push changes\n";
-    git qw/push --set-upstream origin/, $branch_name;
-    hub qw/pull-request -m/, $pr_body;
+    #git qw/push --set-upstream origin/, $branch_name;
+    #hub qw/pull-request -m/, $pr_body;
 
     infof "Releasing pull request is created. Review and merge it. You can update changelogs and commit more in this branch before merging.\n";
 }

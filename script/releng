@@ -2,16 +2,22 @@
 
 =head DESCRIPTION
 
-releng script for mkr
+Release Engineering script for mkr
 orivinal: https://github.com/mackerelio/mackerel-agent/blob/v0.20.1/tool/releng
 
 =head SYNOPSIS
 
-    % tool/releng
+    % releng
+        --help
+        --task=<task>            # 'create-pullrequest' or 'github-release'
+        --next-version=<version> # specify next version. if not specified, a
+                                 # value derived from the branch name is used.
+        --verbose
+        --dry-run
 
 =head DEPENDENCY
 
-`git` command and `hub` or `gh` command are required.
+`git` command and `hub` (or `gh`) command and `github-release` command are required.
 
 =cut
 
@@ -357,9 +363,8 @@ sub upload_to_github_release {
         return;
     }
 
-    # # upload files
+    # upload files
     my $description = "";
-
     my @filepaths = glob("~/rpmbuild/RPMS/*/*.rpm packaging/*.deb snapshot/mkr_*.zip");
     infof "uploading following files:\n" . join("\n", @filepaths). "\n";
     for my $path (@filepaths){
@@ -379,9 +384,7 @@ sub upload_to_github_release {
 
 sub create_pull_request {
     my($current_branch) = @_;
-    # check
-    #chomp(my $email = `git config user.email`);
-    #chomp(my $name  = `git config user.name`);
+
     git qw/checkout/, $current_branch;
 
     my $current_version = last_release;
@@ -399,7 +402,6 @@ sub create_pull_request {
     }
 
     infof "Update changelogs.\n";
-
     my @releases = merged_prs $current_version;
     my $ret = 0;
     if(@releases){
@@ -431,7 +433,6 @@ sub create_pull_request {
 }
 
 ### main process
-
 if (!$ENV{HARNESS_ACTIVE}) {
     main();
 } else {
@@ -470,9 +471,6 @@ sub main {
     }
     # check command
     _git;_hub;
-
-    #git qw/checkout master/;
-    #git qw/pull/;
 
     if($task eq "create-pullrequest"){
         infof "Create a Pull Request for version up.\n";

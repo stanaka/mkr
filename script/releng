@@ -287,8 +287,8 @@ sub update_changelog {
         # '35' means a rough length to cut timestamp at the end of update.
         if(index($content, substr($update, 0, length($update) - 35)) == -1){
             infof "update 'packaging/deb/debian/changelog'.\n";
-            $update . $content;
             $ret = 1;
+            $update . $content;
         } else {
             infof "skip to update 'packaging/deb/debian/changelog'.\n";
             $content;
@@ -304,8 +304,8 @@ sub update_changelog {
         }
         if(index($content, $update) == -1){
             infof "update 'packaging/rpm/mkr.spec'\n";
-            $content =~ s/%changelog/%changelog\n$update/;
             $ret = 1;
+            $content =~ s/%changelog/%changelog\n$update/;
         } else {
             infof "skip to update 'packaging/rpm/mkr.spec'\n";
         }
@@ -321,8 +321,8 @@ sub update_changelog {
         }
         if(index($content, $update) == -1){
             infof "update 'CHANGELOG.md'\n";
-            $content =~ s/\A# Changelog/# Changelog$update/;
             $ret = 1;
+            $content =~ s/\A# Changelog/# Changelog$update/;
         } else {
             infof "skip to update 'CHANGELOG.md'\n";
         }
@@ -399,14 +399,19 @@ sub create_pull_request {
     infof "bump versions, and update readme and changelogs\n";
 
     my @releases = merged_prs $current_version;
-    my $ret = update_changelog($next_version, @releases) if @releases;
+    my $ret = 0;
+    if(@releases){
+        $ret = update_changelog($next_version, @releases);
+    } else {
+        infof "skip to update changelogs because no merged pull request is found after the last release.\n"
+    }
     if($ret || git_with_exit_code qw/diff --exit-code/){
         git qw/commit -am/, "update changelogs";
         git qw/config --global push.default matching/;
         git qw/config user.email/, 'mackerel-developers@hatena.ne.jp';
         git qw/config user.name/, 'mackerel';
-        say "https://github.com/$REPO_NAME.git";
         git qw/push --quiet/, "https://$ENV{GITHUB_TOKEN}\@github.com/$REPO_NAME.git";
+        infof "Difference is pushed to GitHub.\n";
     }
 
     #git qw/diff/, qw/--word-diff/, "master..".current_branch();
@@ -414,8 +419,8 @@ sub create_pull_request {
     say "Pull Request\n--------";
     say $pr_body;
 
-    infof "push changes\n";
-    my $ret = hub_with_exit_code qw/pull-request -m/, $pr_body, qq/-b/, qq/$REPO_NAME:master/;
+    infof "Push changes\n";
+    $ret = hub_with_exit_code qw/pull-request -m/, $pr_body, qq/-b/, qq/$REPO_NAME:master/;
     if($ret && $ret == 0){
         infof "Releasing pull request is created. Review and merge it. You can update changelogs and commit more in this branch before merging.\n";
     } else {

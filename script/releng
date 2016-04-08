@@ -2,8 +2,7 @@
 
 =head DESCRIPTION
 
-Release Engineering script for mkr
-orivinal: https://github.com/mackerelio/mackerel-agent/blob/v0.20.1/tool/releng
+Release Engineering script for mackerel related packages.
 
 =head SYNOPSIS
 
@@ -12,6 +11,8 @@ orivinal: https://github.com/mackerelio/mackerel-agent/blob/v0.20.1/tool/releng
         --task=<task>            # 'create-pullrequest' or 'github-release'
         --next-version=<version> # specify next version. if not specified, a
                                  # value derived from the branch name is used.
+        --package-name=<name>    # target package name. if not specified,
+                                 # the repository name is used.
         --verbose
         --dry-run
 
@@ -37,10 +38,13 @@ use Getopt::Long;
 use File::Basename;
 
 chomp(my $REPO_NAME = `git rev-parse --show-toplevel`);
-$REPO_NAME =~ s|^.+/(\w+/\w+)$|$1|;
+$REPO_NAME =~ s|^.+/([^/]+/[^/]+)$|$1|;
+$REPO_NAME =~ m!/([^/]+)$!;
+my $REPO = $1;
 my $dry_run;
 my $verbose;
 my $next_version;
+my $package_name = $REPO;
 
 sub DEBUG() { $ENV{MC_RELENG_DEBUG} || $verbose }
 
@@ -179,6 +183,7 @@ sub spew {
 }
 sub replace {
     my ($file, $code) = @_;
+    if(!-f $file){ errorf "File does not exist: %s\n", $file; }
     my $content = $code->(slurp($file));
     spew($file, $content);
 }
@@ -205,7 +210,8 @@ sub last_release {
 
     my ($tag) =
         sort { version->parse($b) <=> version->parse($a) }
-        map {/^v([0-9]+(?:\.[0-9]+)+)$/; $1 || ()}
+        map {if(/^\d.\d$/){ $_ . ".0" } else { $_ } }
+        map {if(/^v([0-9]+(?:\.[0-9]+)+)$/){ $1 } else { () }}
         map {chomp; $_} @out;
     $tag;
 }
@@ -238,13 +244,14 @@ sub merged_prs {
         if(m/Merge pull request #([0-9]+) /){ $1 } else { () }
     } `git log v$current_tag... --merges --oneline`;
 
+    say "Pull Requests: " . join(", ", @pull_nums);
     my @releases;
     for my $pull_num (@pull_nums) {
         my $url = sprintf "https://api.github.com/repos/%s/pulls/%d?state=closed", $REPO_NAME, $pull_num;
         my $res = http_get($url);
         unless ($res->{success}) {
             warnf "request to $url failed\n";
-            exit;
+            next; #exit;
         }
         my $data = eval { decode_json $res->{content} };
         if ($@) {
@@ -271,8 +278,10 @@ sub parse_version {
 sub update_changelog {
     my ($next_version, @releases) = @_;
 
-    chomp(my $email = `git config user.email`);
-    chomp(my $name  = `git config user.name`);
+    my $email = 'mackerel-developers@hatena.ne.jp';
+    my $name = 'mackerel';
+    #chomp(my $email = `git config user.email`);
+    #chomp(my $name  = `git config user.name`);
 
     my $old_locale = setlocale(LC_TIME);
     setlocale(LC_TIME, "C");
@@ -286,7 +295,7 @@ sub update_changelog {
     replace 'packaging/deb/debian/changelog' => sub {
         my $content = shift;
 
-        my $update = "mkr ($next_version-1) stable; urgency=low\n\n";
+        my $update = "$package_name ($next_version-1) stable; urgency=low\n\n";
         for my $rel (@releases) {
             $update .= sprintf "  * %s (by %s)\n    <%s>\n", $rel->{title}, $rel->{user}, $rel->{url};
         }
@@ -303,7 +312,8 @@ sub update_changelog {
         }
     };
 
-    replace 'packaging/rpm/mkr.spec' => sub {
+    my $spec = sprintf "packaging/rpm/%s.spec", $package_name;
+    replace $spec => sub {
         my $content = shift;
 
         my $update = sprintf "* %s <%s> - %s-1\n", $now->strftime('%a %b %d %Y'), $email, $next_version;
@@ -311,11 +321,11 @@ sub update_changelog {
             $update .= sprintf "- %s (by %s)\n", $rel->{title}, $rel->{user};
         }
         if(index($content, $update) == -1){
-            infof "update 'packaging/rpm/mkr.spec'\n";
+            infof "update '%s'\n", $spec;
             $ret = 1;
             $content =~ s/%changelog/%changelog\n$update/;
         } else {
-            infof "skip to update 'packaging/rpm/mkr.spec'\n";
+            infof "skip to update '%s'\n", $spec;
         }
         $content;
     };
@@ -349,8 +359,6 @@ sub build_pull_request_body {
 }
 
 sub upload_to_github_release {
-    $REPO_NAME =~ m!/([^/]+)$!;
-    my $REPO = $1;
     my $ret = github_release_with_exit_code qw/release --user/, "stanaka",
         qw/--repo/, $REPO,
         qw/--tag/, "v". next_version(),
@@ -365,7 +373,7 @@ sub upload_to_github_release {
 
     # upload files
     my $description = "";
-    my @filepaths = glob("~/rpmbuild/RPMS/*/*.rpm packaging/*.deb snapshot/mkr_*.zip");
+    my @filepaths = glob("~/rpmbuild/RPMS/*/*.rpm packaging/*.deb snapshot/*.zip");
     infof "uploading following files:\n" . join("\n", @filepaths). "\n";
     for my $path (@filepaths){
         my $filename = basename($path);
@@ -401,7 +409,7 @@ sub create_pull_request {
         return;
     }
 
-    infof "Update changelogs.\n";
+    infof "Update changelogs, between %s and %s.\n", $current_version, $next_version;
     my @releases = merged_prs $current_version;
     my $ret = 0;
     if(@releases){
@@ -414,7 +422,7 @@ sub create_pull_request {
         git qw/config --global push.default matching/;
         git qw/config user.email/, 'mackerel-developers@hatena.ne.jp';
         git qw/config user.name/, 'mackerel';
-        git qw/push/, "https://$ENV{GITHUB_TOKEN}\@github.com/$REPO_NAME.git";
+        git qw/push -u/, "https://$ENV{GITHUB_TOKEN}\@github.com/$REPO_NAME.git";
         infof "Difference is pushed to GitHub.\n";
     }
 
@@ -426,10 +434,17 @@ sub create_pull_request {
     infof "Push changes\n";
     git qw/pull/;
     $ret = hub_with_exit_code qw/pull-request -m/, $pr_body, qq/-b/, qq/$REPO_NAME:master/;
-    if($ret && $ret == 0){
+    if(!defined($ret) || $ret == 0){
         infof "Releasing pull request is created. Review and merge it. You can update changelogs and commit more in this branch before merging.\n";
     } else {
-        infof "Pull Request already seems to exist.\n"
+        # do push and pull-request again
+        git qw/push -u/, "https://$ENV{GITHUB_TOKEN}\@github.com/$REPO_NAME.git";
+        $ret = hub_with_exit_code qw/pull-request -m/, $pr_body, qq/-b/, qq/$REPO_NAME:master/;
+        if(!defined($ret) || $ret == 0){
+            infof "Releasing pull request is created. Review and merge it. You can update changelogs and commit more in this branch before merging.\n";
+        } else {
+            infof "Pull Request already seems to exist.\n"
+        }
     }
 }
 
@@ -448,6 +463,8 @@ $0
   --task=<task>            # 'create-pullrequest' or 'github-release'
   --next-version=<version> # specify next version. if not specified, a
                            # value derived from the branch name is used.
+  --package-name=<name>    # target package name. if not specified,
+                           # the repository name is used.
   --verbose
   --dry-run
 EOS
@@ -464,6 +481,7 @@ sub main {
         "dry-run" => \$dry_run,
         "current-branch=s" => \$current_branch,
         "next-version=s" => \$next_version,
+        "package-name=s" => \$package_name,
         );
 
     if($help){
